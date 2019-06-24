@@ -1,6 +1,8 @@
 import requests
 import time
 import tldextract
+import os
+import zipfile
 
 from functools import partial
 from parsel.selector import Selector
@@ -74,9 +76,6 @@ class Session(requests.Session):
                                    default_timeout=self.default_timeout)
 
     def _start_chrome_browser(self):
-        # TODO transfer of proxies and headers: Not supported by chromedriver atm.
-        # Choosing not to use plug-ins for this as I don't want to worry about the
-        # extra dependencies and plug-ins don't work in headless mode. :-(
         chrome_options = webdriver.chrome.options.Options()
 
         if 'binary_location' in self.webdriver_options:
@@ -89,6 +88,80 @@ class Session(requests.Session):
             else:
                 raise Exception('A list is needed to use \'arguments\' option. Found {}'.format(
                     type(self.webdriver_options['arguments'])))
+
+        # Borrowing an idea from: https://botproxy.net/docs/how-to/setting-chromedriver-proxy-auth-with-selenium-using-python/
+        if self.proxies:
+            proxy_conn_string = self.proxies['https'] or self.proxies['http']
+
+            proxy_scheme = proxy_conn_string.split('://')[0]
+            proxy_endpoint = proxy_conn_string.split('://')[1]
+
+            proxy_auth = proxy_endpoint.split('@')[0] if '@' in proxy_endpoint else False
+            proxy_user = proxy_auth.split(':')[0] if proxy_auth else None
+            proxy_pass = proxy_auth.split(':')[1] if proxy_auth else None
+
+            proxy_addr = proxy_endpoint.split('@')[1] if proxy_auth else proxy_endpoint
+            proxy_host = proxy_addr.split(':')[0] if ':' in proxy_addr else proxy_addr
+            proxy_port = proxy_addr.split(':')[1] if ':' in proxy_addr else 3128
+
+            manifest_json = """
+            {
+                "version": "1.0.0",
+                "manifest_version": 2,
+                "name": "Chrome Proxy",
+                "permissions": [
+                    "proxy",
+                    "tabs",
+                    "unlimitedStorage",
+                    "storage",
+                    "<all_urls>",
+                    "webRequest",
+                    "webRequestBlocking"
+                ],
+                "background": {
+                    "scripts": ["background.js"]
+                },
+                "minimum_chrome_version":"22.0.0"
+            }
+            """
+
+            background_js = """
+            var config = {
+                    mode: "fixed_servers",
+                    rules: {
+                    singleProxy: {
+                        scheme: "%s",
+                        host: "%s",
+                        port: parseInt(%s)
+                    },
+                    bypassList: ["localhost"]
+                    }
+                };
+
+            chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+
+            function callbackFn(details) {
+                return {
+                    authCredentials: {
+                        username: "%s",
+                        password: "%s"
+                    }
+                };
+            }
+
+            chrome.webRequest.onAuthRequired.addListener(
+                        callbackFn,
+                        {urls: ["<all_urls>"]},
+                        ['blocking']
+            );
+            """ % (proxy_scheme, proxy_host, proxy_port, proxy_user, proxy_pass)            
+
+            extension_file = '/tmp/selenium_chrome_proxy_auth_extension.zip'
+            with zipfile.ZipFile(pluginfile, 'w') as zp:
+                zp.writestr("manifest.json", manifest_json)
+                zp.writestr("background.js", background_js)
+
+            chrome_options.add_extension(extension_file)
 
         # Create driver process
         return RequestiumChrome(self.webdriver_path,
