@@ -89,20 +89,26 @@ class Session(requests.Session):
                 raise Exception('A list is needed to use \'arguments\' option. Found {}'.format(
                     type(self.webdriver_options['arguments'])))
 
-        # Borrowing an idea from: https://botproxy.net/docs/how-to/setting-chromedriver-proxy-auth-with-selenium-using-python/
-        if self.proxies:
+        # If we are running in headless mode, only "authless" proxies specified as a chrome arg are supported
+        if 'headless' in self.webdriver_options['arguments']:
+            if self.proxies and ('proxy-server' not in self.webdriver_options['arguments']):
+                raise Exception('Only proxies set via a "proxy-server" chrome argument are supported in headless mode')
+
+        # If an "authless" proxy has been passed as an argument, prefer that.
+        # Otherwise, if a proxy config is available from requests, use an extension to set the corresponding config in chrome
+        # (borrowing an idea from: https://botproxy.net/docs/how-to/setting-chromedriver-proxy-auth-with-selenium-using-python/ )
+        if self.proxies and ('proxy-server' not in self.webdriver_options['arguments']):
             proxy_conn_string = self.proxies['https'] or self.proxies['http']
 
             proxy_scheme = proxy_conn_string.split('://')[0]
             proxy_endpoint = proxy_conn_string.split('://')[1]
-
             proxy_auth = proxy_endpoint.split('@')[0] if '@' in proxy_endpoint else False
-            proxy_user = proxy_auth.split(':')[0] if proxy_auth else None
-            proxy_pass = proxy_auth.split(':')[1] if proxy_auth else None
-
             proxy_addr = proxy_endpoint.split('@')[1] if proxy_auth else proxy_endpoint
-            proxy_host = proxy_addr.split(':')[0] if ':' in proxy_addr else proxy_addr
-            proxy_port = proxy_addr.split(':')[1] if ':' in proxy_addr else 3128
+
+            proxy_user = proxy_auth.split(':')[0] if proxy_auth else ""
+            proxy_pass = proxy_auth.split(':')[1] if proxy_auth and (':' in proxy_auth) else ""
+            proxy_host = proxy_addr.split(':')[0]
+            proxy_port = proxy_addr.split(':')[1]
 
             manifest_json = """
             {
@@ -154,10 +160,13 @@ class Session(requests.Session):
                         {urls: ["<all_urls>"]},
                         ['blocking']
             );
-            """ % (proxy_scheme, proxy_host, proxy_port, proxy_user, proxy_pass)            
+            """ % (proxy_scheme, proxy_host, proxy_port, proxy_user, proxy_pass)
 
-            extension_file = '/tmp/selenium_chrome_proxy_auth_extension.zip'
-            with zipfile.ZipFile(pluginfile, 'w') as zp:
+            extension_file = "/tmp/selenium_chrome_proxy_auth_extension.{time}.zip".format(
+                time=str(time.time())
+            )
+
+            with zipfile.ZipFile(extension_file, 'w') as zp:
                 zp.writestr("manifest.json", manifest_json)
                 zp.writestr("background.js", background_js)
 
